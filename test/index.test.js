@@ -1,0 +1,19 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createWorld, step, analyze, render, renderSVG } from '../src/index.js';
+const cli = args => spawnSync(process.execPath, ['src/cli.js', ...args], { encoding: 'utf8' });
+test('seeds reproduce and batch growth equals single ticks', () => { const a=createWorld(), b=createWorld(); step(a,35); for(let i=0;i<35;i++) step(b); assert.deepEqual(a,b); assert.notDeepEqual(a.segments,step(createWorld({seed:7}),35).segments); });
+test('each segment attaches to its root or an earlier parent and always grows up',()=>{
+ for(const options of [{},{seed:0,colonies:7,depth:7,spread:0.75},{seed:0xffffffff,colonies:1,depth:2,spread:0.15}]) {
+  const w=createWorld(options); step(w,100); assert.equal(w.complete,true); assert.equal(w.tips.length,0); assert.ok(w.segments.length>0); assert.ok(w.frame<=73);
+  w.segments.forEach((s,i)=>{ assert.ok(s.x2>=0.025&&s.x2<=1.575&&s.y2>=0.04&&s.y2<s.y1); assert.ok(s.depth<=w.depth); if(s.parent===-1){assert.equal(s.x1,w.roots[s.colony].x);assert.equal(s.y1,w.roots[s.colony].y);assert.equal(s.depth,0);}else{assert.ok(s.parent>=0&&s.parent<i); const parent=w.segments[s.parent];assert.equal(parent.colony,s.colony);assert.equal(parent.x2,s.x1);assert.equal(parent.y2,s.y1);assert.ok(s.depth===parent.depth||s.depth===parent.depth+1);} });
+  const before=structuredClone(w);step(w,100);assert.deepEqual(w,before);assert.equal(analyze(w).segmentsByColony.reduce((a,b)=>a+b,0),w.segments.length);
+ }
+});
+test('palette and terminal dimensions do not affect grown geometry',()=>{const a=createWorld(),b=createWorld({palette:'lagoon',width:24,height:12});step(a,100);step(b,100);assert.deepEqual(a.segments,b.segments);assert.equal(a.randomState,b.randomState);assert.notEqual(renderSVG(a),renderSVG(b));b.palette=a.palette;assert.equal(renderSVG(a),renderSVG(b));});
+test('validation, no-op growth, and renderer bounds',()=>{for(const o of [{seed:-1},{colonies:0},{depth:8},{spread:Infinity},{spread:0.1},{palette:'toString'},{width:0},{height:100}])assert.throws(()=>createWorld(o));const w=createWorld(),before=structuredClone(w);step(w,0);assert.deepEqual(w,before);assert.throws(()=>step(w,-1));assert.throws(()=>step(w,0.5));step(w,20);const rows=render(w).split('\n');assert.equal(rows.length,w.height);assert.ok(rows.every(row=>row.length===w.width));assert.ok(!render(w).includes('\x1b'));assert.notEqual(render(w),render(w,{tips:false}));assert.match(render(w,{color:true}),/\x1b\[/);const svg=renderSVG(w);assert.match(svg,/<path d="M/);assert.ok(!/NaN|Infinity|undefined/.test(svg));});
+test('CLI summary, custom options, invalid flags, and SVG files',()=>{const r=cli(['--steps','10','--colonies','3','--depth','4','--spread','0.5','--palette','sunset','--json']);assert.equal(r.status,0,r.stderr);const data=JSON.parse(r.stdout);assert.equal(data.frame,10);assert.equal(data.colonies,3);assert.equal(data.depth,4);assert.equal(data.spread,0.5);assert.equal(data.palette,'sunset');assert.ok(!cli(['--steps','0']).stdout.includes('\x1b'));assert.equal(cli(['--help']).status,0);for(const args of [['--seed'],['--colonies','0'],['--spread','3'],['--palette','bad'],['--json','--frames','1'],['--wat']])assert.equal(cli(args).status,2);const dir=mkdtempSync(join(tmpdir(),'coral-'));try{const file=join(dir,'out.svg'),r=cli(['--steps','0','--svg',file,'--json']);assert.equal(r.status,0,r.stderr);assert.equal(JSON.parse(r.stdout).frame,0);assert.match(readFileSync(file,'utf8'),/CORAL GARDEN/);assert.equal(cli(['--svg',join(dir,'missing','out.svg')]).status,2);}finally{rmSync(dir,{recursive:true,force:true});}});
